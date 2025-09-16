@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environments
+.venv/
+.venv311/
+
+# OS files
+.DS_Store
+
+# Notebooks
+.ipynb_checkpoints/
+
+# IDE/editor
+.vscode/
+.idea/
+
+# Temporary outputs
+temp_spectrogram.png
+
+# Large/derived model artifacts (do not commit)
+best_cnnlstm_model.keras
+random_forest_model.joblib
+model_config.pkl
