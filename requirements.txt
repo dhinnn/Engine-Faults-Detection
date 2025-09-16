@@ -1,0 +1,22 @@
+# Requirements for VS Code Engine Fault Detection App
+# Install with: pip install -r requirements.txt
+
+# Core ML libraries
+numpy>=1.21.0,<2.0
+scikit-learn>=1.0.0
+joblib>=1.1.0
+matplotlib>=3.5.0
+seaborn>=0.11.0
+
+# Audio processing
+librosa>=0.9.0
+soundfile>=0.10.0
+
+# Deep learning (Apple Silicon)
+tensorflow-macos==2.15.0
+tensorflow-metal==1.1.0
+
+# Web interface
+gradio>=4.0.0
+
+# Utilities
