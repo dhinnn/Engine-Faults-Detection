@@ -7,9 +7,7 @@ For now, we only include 4 classes — Normal, ExhaustLeak, Misfire, Rodknock �
 
 ## Contents
 - `app.py` — Gradio app entrypoint
-- `server.py` — Optional Flask server (not required for Gradio usage)
 - `requirements.txt` — Python dependencies
-- `.gitignore` — Excludes large model artifacts and local environment files
 
 ## Not included (large artifacts)
 The following model files are not committed to keep the repo light:
@@ -22,7 +20,7 @@ Place these files in the project root if you want to run predictions.
 ### Where to get the model files
 - Download from Google Drive:
   - Link: https://drive.google.com/drive/folders/1U6w25jJsWhjMmWFxqQas6H1_Uw2IjRdW?usp=sharing
-- Or export the trained models from the training notebook/Colab and download the following files:
+  - files contain:
   - `best_cnnlstm_model.keras`
   - `random_forest_model.joblib`
   - `model_config.pkl`
