@@ -7,7 +7,15 @@ import joblib
 import pickle
 import gradio as gr
 import tensorflow as tf
-from tensorflow.keras.models import load_model
+
+def print_model_info(model_path):
+    """Print debug information about a Keras model"""
+    try:
+        with open(model_path, 'rb') as f:
+            print(f"\nModel file exists: {os.path.exists(model_path)}")
+            print(f"Model file size: {os.path.getsize(model_path)} bytes")
+    except Exception as e:
+        print(f"Error reading model file: {e}")
 
 custom_css = """
 /* minimalistic css */
@@ -28,8 +36,8 @@ class Config:
             self.N_FFT = config['N_FFT']
             self.HOP_LENGTH = config['HOP_LENGTH']
         else:
-            self.CLASSES = ["Misfire", "Normal", "Rodknock", "ExhaustLeak"]
-            self.NUM_CLASSES = 4
+            self.CLASSES = ["Misfire", "Normal", "Rodknock", "ExhaustLeak", "Timing Chain", "Clicking", "Knocking"]
+            self.NUM_CLASSES = 7
             self.SAMPLE_RATE = 22050
             self.DURATION = 5
             self.N_MELS = 128
@@ -46,10 +54,55 @@ class ModelManager:
         self.rf_model = None
         self.load_models()
     
+    def create_model_architecture(self):
+        """Recreate the CNN-LSTM model architecture"""
+        inputs = tf.keras.layers.Input(shape=(128, 216, 1))
+        
+        # CNN layers
+        x = tf.keras.layers.Conv2D(32, (3, 3), activation='relu', padding='same')(inputs)
+        x = tf.keras.layers.MaxPooling2D((2, 2))(x)
+        x = tf.keras.layers.Conv2D(64, (3, 3), activation='relu', padding='same')(x)
+        x = tf.keras.layers.MaxPooling2D((2, 2))(x)
+        
+        # Prepare for LSTM
+        x = tf.keras.layers.Reshape((-1, x.shape[-1]))(x)
+        
+        # LSTM layers
+        x = tf.keras.layers.LSTM(64, return_sequences=True)(x)
+        x = tf.keras.layers.LSTM(32)(x)
+        
+        # Dense layers
+        x = tf.keras.layers.Dense(64, activation='relu')(x)
+        x = tf.keras.layers.Dropout(0.5)(x)
+        outputs = tf.keras.layers.Dense(4, activation='softmax')(x)
+        
+        return tf.keras.Model(inputs=inputs, outputs=outputs)
+
     def load_models(self):
         try:
-            if os.path.exists('best_cnnlstm_model.keras'):
-                self.cnnlstm_model = load_model('best_cnnlstm_model.keras', compile=False)
+            model_path = 'best_cnnlstm_model.keras'
+            if os.path.exists(model_path):
+                print_model_info(model_path)
+                try:
+                    # Try loading with tf.keras directly first
+                    self.cnnlstm_model = tf.keras.models.load_model(
+                        model_path,
+                        custom_objects={
+                            'Input': tf.keras.layers.Input,
+                            'InputLayer': tf.keras.layers.InputLayer
+                        },
+                        compile=False
+                    )
+                    print("Successfully loaded CNN-LSTM model with custom input layer")
+                except Exception as keras_error:
+                    print(f"\nFailed to load with keras.models.load_model: {str(keras_error)}")
+                    try:
+                        # Fallback: Try loading as SavedModel
+                        self.cnnlstm_model = tf.saved_model.load(model_path)
+                        print("Successfully loaded CNN-LSTM model as SavedModel")
+                    except Exception as tf_error:
+                        print(f"\nFailed to load with tf.saved_model.load: {str(tf_error)}")
+                        self.cnnlstm_model = None
         except Exception as e:
             print(f"Error loading CNN-LSTM model: {e}")
             self.cnnlstm_model = None
