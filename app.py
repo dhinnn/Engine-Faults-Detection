@@ -7,6 +7,7 @@ import joblib
 import pickle
 import gradio as gr
 import tensorflow as tf
+from advice import get_advice
 
 def print_model_info(model_path):
     """Print debug information about a Keras model"""
@@ -19,25 +20,46 @@ def print_model_info(model_path):
 
 custom_css = """
 /* minimalistic css */
+
+/* Hide Gradio branding/footer and settings controls for a cleaner UI.
+    Targets common Gradio class names and links. Uses !important to
+    override library styles. If Gradio updates their DOM or class names
+    this may need adjustment. */
+.gradio-badge, .gradio-badges, .gradio-logo, .gradio-brand, .gradio-footer, footer.gradio-footer, .gradio-topbar .gradio-settings { display: none !important; }
+a[href*="gradio.app"], a[href*="gradio.com"] { display: none !important; }
+/* Some Gradio builds inject a footer with visible text; hide it via visibility to
+   ensure text nodes are not visible while preserving layout if needed. */
+footer, .footer { visibility: hidden !important; }
 """
 
 class Config:
     """Configuration loaded from trained model parameters"""
     def __init__(self, config_path='model_config.pkl'):
-        if os.path.exists(config_path):
-            with open(config_path, 'rb') as f:
-                config = pickle.load(f)
-            
-            self.CLASSES = config['CLASSES']
-            self.NUM_CLASSES = config['NUM_CLASSES']
-            self.SAMPLE_RATE = config['SAMPLE_RATE']
-            self.DURATION = config['DURATION']
-            self.N_MELS = config['N_MELS']
-            self.N_FFT = config['N_FFT']
-            self.HOP_LENGTH = config['HOP_LENGTH']
-        else:
-            self.CLASSES = ["Misfire", "Normal", "Rodknock", "ExhaustLeak", "Timing Chain", "Clicking", "Knocking"]
-            self.NUM_CLASSES = 7
+        # Try loading config from given path or from the model/ subfolder (common export locations)
+        loaded = False
+        possible_paths = [config_path, os.path.join('model', config_path)]
+        for p in possible_paths:
+            if os.path.exists(p):
+                try:
+                    with open(p, 'rb') as f:
+                        config = pickle.load(f)
+
+                    self.CLASSES = config['CLASSES']
+                    self.NUM_CLASSES = config['NUM_CLASSES']
+                    self.SAMPLE_RATE = config['SAMPLE_RATE']
+                    self.DURATION = config['DURATION']
+                    self.N_MELS = config['N_MELS']
+                    self.N_FFT = config['N_FFT']
+                    self.HOP_LENGTH = config['HOP_LENGTH']
+                    loaded = True
+                    break
+                except Exception as e:
+                    print(f"Error reading config from {p}: {e}")
+
+        if not loaded:
+            # Default fallback configuration. Note: ExhaustLeak removed.
+            self.CLASSES = ["Misfire", "Normal", "Rodknock", "Timing Chain", "Clicking", "Knocking"]
+            self.NUM_CLASSES = 6
             self.SAMPLE_RATE = 22050
             self.DURATION = 5
             self.N_MELS = 128
@@ -74,13 +96,19 @@ class ModelManager:
         # Dense layers
         x = tf.keras.layers.Dense(64, activation='relu')(x)
         x = tf.keras.layers.Dropout(0.5)(x)
-        outputs = tf.keras.layers.Dense(4, activation='softmax')(x)
+        outputs = tf.keras.layers.Dense(config.NUM_CLASSES, activation='softmax')(x)
         
         return tf.keras.Model(inputs=inputs, outputs=outputs)
 
     def load_models(self):
-        try:
-            model_path = 'best_cnnlstm_model.keras'
+        # Try multiple candidate locations for the CNN-LSTM model (root and model/ folder)
+        cnn_candidates = [
+            'best_cnnlstm_model.keras',
+            os.path.join('model', 'best_cnnlstm_model.keras')
+        ]
+
+        self.cnnlstm_model = None
+        for model_path in cnn_candidates:
             if os.path.exists(model_path):
                 print_model_info(model_path)
                 try:
@@ -93,26 +121,35 @@ class ModelManager:
                         },
                         compile=False
                     )
-                    print("Successfully loaded CNN-LSTM model with custom input layer")
+                    print(f"Successfully loaded CNN-LSTM model from {model_path} (keras.models.load_model)")
+                    break
                 except Exception as keras_error:
-                    print(f"\nFailed to load with keras.models.load_model: {str(keras_error)}")
+                    print(f"Failed to load {model_path} with keras.models.load_model: {str(keras_error)}")
                     try:
                         # Fallback: Try loading as SavedModel
                         self.cnnlstm_model = tf.saved_model.load(model_path)
-                        print("Successfully loaded CNN-LSTM model as SavedModel")
+                        print(f"Successfully loaded CNN-LSTM model from {model_path} (tf.saved_model.load)")
+                        break
                     except Exception as tf_error:
-                        print(f"\nFailed to load with tf.saved_model.load: {str(tf_error)}")
+                        print(f"Failed to load {model_path} with tf.saved_model.load: {str(tf_error)}")
                         self.cnnlstm_model = None
-        except Exception as e:
-            print(f"Error loading CNN-LSTM model: {e}")
-            self.cnnlstm_model = None
 
-        try:
-            if os.path.exists('random_forest_model.joblib'):
-                self.rf_model = joblib.load('random_forest_model.joblib')
-        except Exception as e:
-            print(f"Error loading Random Forest model: {e}")
-            self.rf_model = None
+        # Try multiple candidate locations for the random forest model
+        rf_candidates = [
+            'random_forest_model.joblib',
+            os.path.join('model', 'random_forest_model.joblib')
+        ]
+
+        self.rf_model = None
+        for rf_path in rf_candidates:
+            if os.path.exists(rf_path):
+                try:
+                    self.rf_model = joblib.load(rf_path)
+                    print(f"Loaded Random Forest model from {rf_path}")
+                except Exception as e:
+                    print(f"Error loading Random Forest model from {rf_path}: {e}")
+                    self.rf_model = None
+                break
     
     def audio_to_spectrogram(self, audio_path):
         """Convert audio file to mel spectrogram"""
@@ -157,12 +194,20 @@ class ModelManager:
         
         sample_for_pred = np.expand_dims(spectrogram[..., np.newaxis], axis=0)
         
-        prediction = self.cnnlstm_model.predict(sample_for_pred, verbose=0)
-        predicted_class_idx = np.argmax(prediction)
-        confidence = np.max(prediction)
-        
-        predicted_label = config.CLASSES[predicted_class_idx]
-        return predicted_label, float(confidence)
+        try:
+            prediction = self.cnnlstm_model.predict(sample_for_pred, verbose=0)
+            predicted_class_idx = np.argmax(prediction)
+            confidence = np.max(prediction)
+            
+            if predicted_class_idx < len(config.CLASSES):
+                predicted_label = config.CLASSES[predicted_class_idx]
+            else:
+                print(f"Warning: Model predicted class index {predicted_class_idx} but only have {len(config.CLASSES)} classes")
+                predicted_label = "Unknown"
+            return predicted_label, float(confidence)
+        except Exception as e:
+            print(f"Error during prediction: {e}")
+            return "Error during prediction", 0.0
     
     def predict_with_rf(self, audio_path):
         """Predict using Random Forest model"""
@@ -233,13 +278,18 @@ def predict_audio(audio_file):
     
     try:
         results = model_manager.predict_both_models(audio_file)
-        
+
+        # Get spectrogram for visualization
         spectrogram_plot = model_manager.visualize_spectrogram(audio_file)
-        
-        return results, spectrogram_plot
+
+        # Get CNN-LSTM label (preferred) for advice if available
+        cnn_label, _ = model_manager.predict_with_cnnlstm(audio_file)
+        advice_text = get_advice(cnn_label) if cnn_label else "No advice available."
+
+        return results, spectrogram_plot, advice_text
         
     except Exception as e:
-        return f"Error processing audio: {str(e)}", None
+        return f"Error processing audio: {str(e)}", None, "Error generating advice"
 
 def predict_single_model(audio_file, model_type):
     """Predict using single model"""
@@ -251,11 +301,14 @@ def predict_single_model(audio_file, model_type):
             result = model_manager.predict_with_cnnlstm(audio_file)
         else:
             result = model_manager.predict_with_rf(audio_file)
-        
-        return f"Prediction: {result[0]}\nConfidence: {result[1]:.3f}"
+
+        pred_text = f"Prediction: {result[0]}\nConfidence: {result[1]:.3f}"
+        advice_text = get_advice(result[0])
+
+        return pred_text, advice_text
         
     except Exception as e:
-        return f"Error: {str(e)}"
+        return f"Error: {str(e)}", ""
 
 def create_interface():
     with gr.Blocks(title="Engine Fault Detection", theme=gr.themes.Soft(), css=custom_css) as demo:
@@ -274,6 +327,7 @@ def create_interface():
                 with gr.Column():
                     results_output = gr.Markdown(label="Predictions")
                     spectrogram_output = gr.Image(label="Mel Spectrogram")
+                    advice_output = gr.Markdown(label="Advice")
         
         with gr.Tab("Individual Models"):
             with gr.Row():
@@ -294,6 +348,7 @@ def create_interface():
                         label="Prediction Result", 
                         lines=3
                     )
+                    advice_output2 = gr.Markdown(label="Advice")
         
         with gr.Tab("Model Info"):
             gr.Markdown(f"""
@@ -314,16 +369,17 @@ def create_interface():
         predict_btn.click(
             predict_audio,
             inputs=[audio_input],
-            outputs=[results_output, spectrogram_output]
+            outputs=[results_output, spectrogram_output, advice_output]
         )
         
         predict_btn2.click(
             predict_single_model,
             inputs=[audio_input2, model_choice],
-            outputs=[single_result]
+            outputs=[single_result, advice_output2]
         )
     
     return demo
+
 
 if __name__ == "__main__":
     required_files = [
@@ -331,15 +387,20 @@ if __name__ == "__main__":
         'random_forest_model.joblib',
         'model_config.pkl'
     ]
-    
-    missing_files = [f for f in required_files if not os.path.exists(f)]
-    
-    if missing_files:
-        print("⚠️  Missing model files:")
-        for file in missing_files:
-            print(f"   - {file}")
-        print("\nPlease run the Colab export script and download the model files.")
-        print("Place them in the same directory as this script.")
+    # Check groups of candidate locations (root and model/ folder)
+    candidate_groups = {
+        'CNN-LSTM model': ['best_cnnlstm_model.keras', os.path.join('model', 'best_cnnlstm_model.keras')],
+        'Random Forest model': ['random_forest_model.joblib', os.path.join('model', 'random_forest_model.joblib')],
+        'Model config (pkl)': ['model_config.pkl', os.path.join('model', 'model_config.pkl')]
+    }
+
+    missing_groups = [name for name, paths in candidate_groups.items() if not any(os.path.exists(p) for p in paths)]
+
+    if missing_groups:
+        print("⚠️  Missing model files or config (looked in root and model/):")
+        for name in missing_groups:
+            print(f"   - {name}")
+        print("\nPlease run the Colab export script and download the model files, or place them in the 'model/' folder or the script root.")
     
     demo = create_interface()
     
